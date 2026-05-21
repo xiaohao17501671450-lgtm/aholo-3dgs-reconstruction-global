@@ -4,9 +4,9 @@
 """
 Aholo 3D Reconstruction Skill — International (OpenAPI v1, global gateway)
 
-Flow (Aholo Open Platform global site, gateway https://api.aholo3d.com, world APIs under /global prefix):
+Flow (Aholo Open Platform global site, gateway https://api-beta.aholo3d.com, world APIs under /global prefix):
 1) GET /global/world/v1/asset/token
-2) OUS direct / multipart upload (/ous/api/* has no /global prefix; globalDomain often https://ous-sg.kujiale.com)
+2) OUS direct / multipart upload (/ous/api/* has no /global prefix; globalDomain from token, e.g. https://ous-sg-beta.kujiale.com)
 3) POST /global/world/v1/reconstructions or /global/world/v1/generations
 4) GET /global/world/v1/{worldId}
 """
@@ -16,7 +16,10 @@ import json
 import mimetypes
 import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -27,12 +30,28 @@ import urllib3
 
 
 SITE_CONFIG = {
-    "base_url": "https://api.aholo3d.com",
+    "base_url": "https://api-beta.aholo3d.com",
     "path_prefix": "/global",
     "viewer_url_template": "https://studio.aholo3d.com/3dgs-model/{world_id}",
     "api_keys_url": "https://labs.aholo3d.com/api-keys",
     "skill_script_path": ".cursor/skills/aholo-3dgs-reconstruction-global/aholo_reconstruct.py",
 }
+
+
+def _parse_lack_blocks(lack_blocks: Optional[List[Any]]) -> List[int]:
+    """Parse OUS init `lackBlocks` like ['2-15', '7'] into block indices."""
+    nums: List[int] = []
+    for item in lack_blocks or []:
+        text = str(item).strip()
+        if not text:
+            continue
+        if "-" in text:
+            start_s, end_s = text.split("-", 1)
+            start_i, end_i = int(start_s), int(end_s)
+            nums.extend(range(start_i, end_i + 1))
+        else:
+            nums.append(int(text))
+    return sorted(set(nums))
 
 
 def _world_api_paths(path_prefix: str) -> Dict[str, str]:
@@ -240,6 +259,88 @@ class AholoClient:
                 h.update(chunk)
         return h.hexdigest()
 
+    def _upload_block_part(
+        self,
+        part_url: str,
+        block_num: int,
+        chunk: bytes,
+        part_filename: str,
+        mime_type: str,
+    ) -> Dict[str, Any]:
+        """Upload one block. Uses curl when available (large payloads avoid requests SSL EOF on beta OUS)."""
+        curl_bin = shutil.which("curl")
+        if curl_bin:
+            tmp_path = None
+            try:
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".part") as tmp:
+                    tmp.write(chunk)
+                    tmp_path = tmp.name
+                cmd = [
+                    curl_bin,
+                    "-sS",
+                    "--http1.1",
+                    "--retry",
+                    "5",
+                    "--retry-delay",
+                    "3",
+                    "--retry-all-errors",
+                    "-X",
+                    "POST",
+                    part_url,
+                ]
+                if not self.verify_ssl:
+                    cmd.insert(1, "-k")
+                if self.ous_token:
+                    cmd.extend(["-H", f"ous-token-v2: {self.ous_token}"])
+                cmd.extend(
+                    [
+                        "-F",
+                        f"block={block_num}",
+                        "-F",
+                        f"file=@{tmp_path};filename={part_filename};type={mime_type}",
+                    ]
+                )
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600, check=False)
+                if proc.returncode != 0:
+                    err = (proc.stderr or proc.stdout or "").strip() or f"curl exit {proc.returncode}"
+                    return {"success": False, "error": f"Multipart upload failed (block={block_num}): {err}"}
+                try:
+                    result = json.loads(proc.stdout or "{}")
+                except json.JSONDecodeError as e:
+                    return {"success": False, "error": f"Invalid curl response (block={block_num}): {e}"}
+                if not self._ok(result):
+                    return {
+                        "success": False,
+                        "error": f"Multipart upload failed (block={block_num}): {self._api_error(result)}",
+                    }
+                return {"success": True}
+            finally:
+                if tmp_path and os.path.exists(tmp_path):
+                    os.unlink(tmp_path)
+
+        try:
+            resp = requests.post(
+                part_url,
+                headers=self._ous_headers(),
+                data={"block": block_num},
+                files={"file": (part_filename, chunk, mime_type)},
+                timeout=600,
+                verify=self.verify_ssl,
+            )
+            resp.raise_for_status()
+            result = resp.json()
+        except requests.exceptions.RequestException as e:
+            return {"success": False, "error": f"Multipart upload failed (block={block_num}): {e}"}
+        except json.JSONDecodeError as e:
+            return {"success": False, "error": f"Failed to parse multipart upload response (block={block_num}): {e}"}
+
+        if not self._ok(result):
+            return {
+                "success": False,
+                "error": f"Multipart upload failed (block={block_num}): {self._api_error(result)}",
+            }
+        return {"success": True}
+
     def _poll_upload_until_ready(
         self, timeout_seconds: int = 120, interval_seconds: float = 0.5
     ) -> Dict[str, Any]:
@@ -326,28 +427,24 @@ class AholoClient:
         total_blocks = (file_size + block_size - 1) // block_size
         init_url = f"{self.global_domain}/ous/api/v2/block/upload/init"
 
+        init_params = {
+            "md5": md5_value,
+            "blocks": total_blocks,
+            "size": file_size,
+            "name": path.name,
+        }
         with step_timer(f"multipart upload: {path.name}"):
             try:
+                # OUS block init expects query params (not JSON body); see OpenAPI ousCosBlockUploadInit.
                 init_resp = requests.post(
                     init_url,
                     headers=self._ous_headers(),
-                    json={"md5": md5_value, "blocks": total_blocks, "size": file_size, "name": path.name},
-                    timeout=30,
+                    params=init_params,
+                    timeout=120,
                     verify=self.verify_ssl,
                 )
                 init_resp.raise_for_status()
                 init_result = init_resp.json()
-                if not self._ok(init_result) and "md5" in str(self._api_error(init_result)).lower():
-                    # Beta compatibility: some gateways expect multipart init params in query string.
-                    init_resp = requests.post(
-                        init_url,
-                        headers=self._ous_headers(),
-                        params={"md5": md5_value, "blocks": total_blocks, "size": file_size, "name": path.name},
-                        timeout=30,
-                        verify=self.verify_ssl,
-                    )
-                    init_resp.raise_for_status()
-                    init_result = init_resp.json()
             except requests.exceptions.RequestException as e:
                 return {"success": False, "error": f"Multipart init failed: {e}", "originalPath": file_path}
             except json.JSONDecodeError as e:
@@ -367,34 +464,31 @@ class AholoClient:
         if not deduplicated:
             part_url = f"{self.global_domain}/ous/api/v2/block/upload/part"
             mime_type = mimetypes.guess_type(file_path)[0] or "application/octet-stream"
-            try:
-                with open(file_path, "rb") as f:
-                    for block in range(1, total_blocks + 1):
-                        chunk = f.read(block_size)
-                        if not chunk:
-                            break
-                        resp = requests.post(
-                            part_url,
-                            headers=self._ous_headers(),
-                            data={"block": block},
-                            files={"file": (f"{path.name}.part{block}", chunk, mime_type)},
-                            timeout=180,
-                            verify=self.verify_ssl,
-                        )
-                        resp.raise_for_status()
-                        result = resp.json()
-                        if not self._ok(result):
-                            return {
-                                "success": False,
-                                "error": f"Multipart upload failed (block={block}): {self._api_error(result)}",
-                                "originalPath": file_path,
-                            }
-            except requests.exceptions.RequestException as e:
-                return {"success": False, "error": f"Multipart upload failed: {e}", "originalPath": file_path}
-            except json.JSONDecodeError as e:
-                return {"success": False, "error": f"Failed to parse multipart upload response: {e}", "originalPath": file_path}
+            lack_blocks = _parse_lack_blocks(init_data.get("lackBlocks"))
+            blocks_to_upload = lack_blocks if lack_blocks else list(range(1, total_blocks + 1))
+            with open(file_path, "rb") as f:
+                for block in blocks_to_upload:
+                    f.seek((block - 1) * block_size)
+                    chunk = f.read(block_size)
+                    if not chunk:
+                        return {
+                            "success": False,
+                            "error": f"Cannot read block {block} from file.",
+                            "originalPath": file_path,
+                        }
+                    part_result = self._upload_block_part(
+                        part_url,
+                        block,
+                        chunk,
+                        f"{path.name}.part{block}",
+                        mime_type,
+                    )
+                    if not part_result.get("success"):
+                        part_result["originalPath"] = file_path
+                        return part_result
+                    print(f"  block {block}/{total_blocks} uploaded")
 
-        poll_result = self._poll_upload_until_ready()
+        poll_result = self._poll_upload_until_ready(timeout_seconds=600)
         poll_result["originalPath"] = file_path
         return poll_result
 
