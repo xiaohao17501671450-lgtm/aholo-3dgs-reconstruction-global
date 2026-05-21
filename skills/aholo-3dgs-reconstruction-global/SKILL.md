@@ -25,7 +25,6 @@ description: "Aholo OpenAPI v1 global 3D tasks (reconstruction/generation): uplo
 | Gateway | `https://api-beta.aholo3d.com`; paths `/global/world/v1/*` |
 | Viewer | `https://studio.aholo3d.com/3dgs-model/{worldId}` |
 | Actions | `create` / `create-reconstruction` / `create-generation` / `status` / `poll` |
-| OUS upload | Token response uses `c` / `m` / `d`; OpenAPI success is direct business object |
 | Create success | `WorldAsyncOperation` with `worldId` only |
 | Credits | bizCode `11003` or `insufficient credits` → say insufficient credits; direct user to [www.aholo3d.com/pricing](https://www.aholo3d.com/pricing) to purchase; no invented URLs; no `create*` retry for **same video / same intent** |
 
@@ -37,13 +36,12 @@ description: "Aholo OpenAPI v1 global 3D tasks (reconstruction/generation): uplo
 - Force verification on: `AHOLO_FORCE_SSL_VERIFY=1` (or `true` / `yes` / `on`).
 - Legacy env `AHOLO_INSECURE_SKIP_VERIFY`: verification is forced **on** only when set to `0` / `false` / `no` / `off`; any other value or unset keeps default skip.
 
-### Response & compatibility (agent troubleshooting)
+### Response & troubleshooting
 
-- **OpenAPI success:** HTTP 200, business object directly (**not** OUS `c` / `m` / `d`). Create returns JSON `WorldAsyncOperation` with `worldId` only.
-- **Legacy:** Some gateways may return bare-text `worldId` on create; the script accepts it — do **not** retry `create` because of format uncertainty.
+- **OpenAPI success:** HTTP 200; create returns JSON `WorldAsyncOperation` with `worldId` only.
 - **JSON parsing:** Script tolerates UTF-8 BOM, leading/trailing whitespace, and trailing junk after valid JSON in OpenAPI responses.
 - **OpenAPI failure:** HTTP 4xx/5xx, body `ApiError`: `code`, `message`, `status`, `details.metaData.bizCode` (e.g. unauthenticated `10004`, insufficient credits `11003`).
-- **OUS upload:** Always use `globalDomain` from token (e.g. `https://ous-sg.kujiale.com` — never hard-code). Paths `/ous/api/...` (**no** `/global` prefix on OUS). Response is OUS V2 (`c` / `m` / `d`), unlike OpenAPI direct body. Large block uploads may use **`curl`** fallback when `requests` hits SSL EOF on beta OUS.
+- **OUS upload:** Always use `globalDomain` from token (never hard-code). Paths `/ous/api/...` (**no** `/global` prefix on OUS). Large block uploads may use **`curl`** fallback when `requests` hits SSL EOF on beta OUS.
 
 ## 3. Agent hard constraints (mandatory)
 
