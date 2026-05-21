@@ -11,7 +11,7 @@ Cursor / OpenClaw Agent Skill for **Aholo Global Open Platform** 3D tasks: world
 | Path | Role |
 |------|------|
 | `LICENSE` | MIT license (marketplace requirement) |
-| `skills/aholo-3dgs-reconstruction-global/SKILL.md` | Agent instructions |
+| `skills/aholo-3dgs-reconstruction-global/SKILL.md` | Agent instructions (canonical) |
 | `skills/aholo-3dgs-reconstruction-global/aholo_reconstruct.py` | CLI: upload, create task, poll |
 | `skills/aholo-3dgs-reconstruction-global/requirements.txt` | Python dependencies |
 
