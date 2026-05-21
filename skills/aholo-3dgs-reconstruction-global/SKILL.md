@@ -20,7 +20,7 @@ description: "Aholo OpenAPI v1 global 3D tasks (reconstruction/generation): uplo
 | Item | Detail |
 |------|--------|
 | Env | `AHOLO_API_KEY` — [api-keys](https://labs.aholo3d.com/api-keys) |
-| Auth | `Authorization: <API Key>`, no `Bearer` |
+| Auth | `Authorization: <API key>`, no `Bearer` |
 | Create header | `x-source: skills` → platform `OPEN_API_SKILL` |
 | Gateway | `https://api-beta.aholo3d.com`; paths `/global/world/v1/*` |
 | Viewer | `https://studio.aholo3d.com/3dgs-model/{worldId}` |

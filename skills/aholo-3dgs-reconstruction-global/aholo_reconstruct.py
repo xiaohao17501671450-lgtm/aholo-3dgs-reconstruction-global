@@ -105,7 +105,7 @@ def _is_url(s: str) -> bool:
 def _auth_hint(error_msg: str, code: Optional[str] = None) -> str:
     text = f"{error_msg} {code or ''}".lower()
     if any(x in text for x in ["auth", "authorization", "401", "403", "appkey", "api key", "apikey"]):
-        return "Check that `AHOLO_API_KEY` is correct and the `Authorization` header is the raw API Key (no Bearer prefix)."
+        return "Check that `AHOLO_API_KEY` is correct and the `Authorization` header is the raw API key (no Bearer prefix)."
     return ""
 
 
@@ -280,9 +280,9 @@ class AholoClient:
                     "-sS",
                     "--http1.1",
                     "--retry",
-                    "5",
+                    "2",
                     "--retry-delay",
-                    "3",
+                    "5",
                     "--retry-all-errors",
                     "-X",
                     "POST",
@@ -300,7 +300,7 @@ class AholoClient:
                         f"file=@{tmp_path};filename={part_filename};type={mime_type}",
                     ]
                 )
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=600, check=False)
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1200, check=False)
                 if proc.returncode != 0:
                     err = (proc.stderr or proc.stdout or "").strip() or f"curl exit {proc.returncode}"
                     return {"success": False, "error": f"Multipart upload failed (block={block_num}): {err}"}
@@ -800,11 +800,11 @@ def main() -> None:
     api_key = os.environ.get("AHOLO_API_KEY", "").strip()
     if not api_key:
         print("## Missing environment variable\n")
-        print("Set `AHOLO_API_KEY` (Aholo Open Platform API Key) in your environment.")
-        print(f"If you do not have an API Key yet, create one at {SITE_CONFIG['api_keys_url']}")
+        print("Set `AHOLO_API_KEY` (Aholo Open Platform API key) in your environment.")
+        print(f"If you do not have an API key yet, create one at {SITE_CONFIG['api_keys_url']}")
         print("")
         print("After configuring, **reply \"continue\" in Cursor** or restate your 3D task; the agent will run the script.")
-        print("Without API Key, **do not repeatedly run this script**, especially create actions.")
+        print("Without API key, **do not repeatedly run this script**, especially create actions.")
         sys.exit(1)
 
     client = AholoClient(api_key=api_key)
